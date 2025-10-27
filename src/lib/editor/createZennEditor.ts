@@ -30,6 +30,7 @@ export type CreateZennEditorProps = {
 	onChange?: (html: string, markdown: string) => void;
 	onImageUpload?: (files: File[]) => Promise<string[]>;
 	onMessage?: (message: unknown) => void;
+	onHeadingsChange?: (headings: HeadingItem[]) => void;
 	slashCommandItems?: SlashCommandItem[];
 	slashCommandMaxItems?: SlashCommandOptions['maxItems'];
 };
@@ -37,6 +38,13 @@ export type CreateZennEditorProps = {
 export type ZennEditorInstance = {
 	editor: Editor;
 	destroy: () => void;
+};
+
+export type HeadingItem = {
+	id: string;
+	level: number;
+	text: string;
+	pos: number;
 };
 
 const defaultSlashCommandItems: SlashCommandItem[] = [
@@ -190,11 +198,46 @@ type FloatingMenuShouldShowProps = Parameters<
 
 const shouldShowFloatingMenu = ({ editor, state }: FloatingMenuShouldShowProps) => {
 	const { selection } = state;
-  const { $from } = selection;
-  if (!$from) return false;
+	const { $from } = selection;
+	if (!$from) return false;
 
-  const isAtStart = selection.empty && $from.parentOffset === 0;
-  return isAtStart && editor.isActive('paragraph') && $from.parent.textContent.length === 0;
+	const isAtStart = selection.empty && $from.parentOffset === 0;
+	return isAtStart && editor.isActive('paragraph') && $from.parent.textContent.length === 0;
+};
+
+const slugifyHeading = (text: string) =>
+	text
+		.toLowerCase()
+		.trim()
+		.replace(/[^\p{Letter}\p{Number}\s-]/gu, '')
+		.replace(/\s+/g, '-')
+		.replace(/-+/g, '-')
+		.slice(0, 80) || 'heading';
+
+const collectHeadings = (doc: Editor['state']['doc']): HeadingItem[] => {
+	const seen = new Map<string, number>();
+	const headings: HeadingItem[] = [];
+
+	doc.descendants((node: any, pos: number) => {
+		if (node.type.name === 'heading') {
+			const level = Number(node.attrs.level ?? 1);
+			const text = node.textContent.trim();
+			const baseId = slugifyHeading(text || `heading-${level}`);
+			const count = seen.get(baseId) ?? 0;
+			const id = count === 0 ? baseId : `${baseId}-${count + 1}`;
+			seen.set(baseId, count + 1);
+
+			headings.push({
+				id,
+				level,
+				text,
+				pos,
+			});
+		}
+		return true;
+	});
+
+	return headings;
 };
 
 export function createZennEditor({
@@ -208,6 +251,7 @@ export function createZennEditor({
 	onChange,
 	onImageUpload,
 	onMessage,
+	onHeadingsChange,
 	slashCommandItems = defaultSlashCommandItems,
 	slashCommandMaxItems,
 }: CreateZennEditorProps): ZennEditorInstance {
@@ -293,6 +337,7 @@ export function createZennEditor({
 			const html = editor.getHTML();
 			const markdown = renderMarkdown(editor.state.doc);
 			onChange?.(html, markdown);
+			onHeadingsChange?.(collectHeadings(editor.state.doc));
 		},
 		onTransaction: ({ transaction }) => {
 			const message = transaction.getMeta('message');
@@ -305,6 +350,8 @@ export function createZennEditor({
 			},
 		},
 	});
+
+	onHeadingsChange?.(collectHeadings(editor.state.doc));
 
 	return {
 		editor,
