@@ -4,6 +4,7 @@ import Suggestion, {
 	type SuggestionOptions,
 	type SuggestionProps,
 } from '@tiptap/suggestion';
+import type { MessageVariant } from './extensions/message';
 
 export type SlashCommandContext = {
 	editor: Editor;
@@ -24,6 +25,198 @@ export type SlashCommandOptions = {
 	items: SlashCommandItem[];
 	maxItems?: number;
 };
+
+export const defaultSlashCommandItems: SlashCommandItem[] = [
+	{
+		id: 'paragraph',
+		title: '段落',
+		description: '通常のテキストブロック',
+		icon: '¶',
+		command: ({ editor, range }) =>
+			editor.chain().focus().deleteRange(range).setParagraph().run(),
+		keywords: ['text', 'p'],
+	},
+	{
+		id: 'heading-2',
+		title: '見出し 2',
+		description: 'セクションの見出しを追加',
+		icon: 'H2',
+		command: ({ editor, range }) =>
+			editor.chain().focus().deleteRange(range).toggleHeading({ level: 2 }).run(),
+		keywords: ['h2', 'heading'],
+	},
+	{
+		id: 'heading-3',
+		title: '見出し 3',
+		description: 'サブセクションの見出し',
+		icon: 'H3',
+		command: ({ editor, range }) =>
+			editor.chain().focus().deleteRange(range).toggleHeading({ level: 3 }).run(),
+		keywords: ['h3', 'heading'],
+	},
+	{
+		id: 'quote',
+		title: '引用',
+		description: '引用ブロックを追加',
+		icon: '❝',
+		command: ({ editor, range }) =>
+			editor.chain().focus().deleteRange(range).toggleBlockquote().run(),
+		keywords: ['blockquote'],
+	},
+	{
+		id: 'code-block',
+		title: 'コードブロック',
+		description: 'シンタックスハイライト付きコードブロック',
+		icon: '</>',
+		command: ({ editor, range }) =>
+			editor.chain().focus().deleteRange(range).toggleCodeBlock().run(),
+		keywords: ['code'],
+	},
+	{
+		id: 'bullet-list',
+		title: '箇条書き',
+		description: '通常の箇条書きリスト',
+		icon: '•',
+		command: ({ editor, range }) =>
+			editor.chain().focus().deleteRange(range).toggleBulletList().run(),
+		keywords: ['list', 'ul'],
+	},
+	{
+		id: 'ordered-list',
+		title: '番号付きリスト',
+		description: '番号付きのリスト',
+		icon: '1.',
+		command: ({ editor, range }) =>
+			editor.chain().focus().deleteRange(range).toggleOrderedList().run(),
+		keywords: ['list', 'ol'],
+	},
+	{
+		id: 'task-list',
+		title: 'タスクリスト',
+		description: 'チェックボックス付きリスト',
+		icon: '☑︎',
+		command: ({ editor, range }) =>
+			editor.chain().focus().deleteRange(range).toggleTaskList().run(),
+		keywords: ['todo', 'task'],
+	},
+	{
+		id: 'horizontal-rule',
+		title: '区切り線',
+		description: 'セクションの区切り線を挿入',
+		icon: '―',
+		command: ({ editor, range }) =>
+			editor.chain().focus().deleteRange(range).setHorizontalRule().run(),
+		keywords: ['divider', 'hr'],
+	},
+	{
+		id: 'image',
+		title: '画像',
+		description: '画像を挿入（URL指定）',
+		icon: '🖼',
+		command: ({ editor, range }) => {
+			const url = window.prompt('画像のURLを入力してください');
+			if (!url) return;
+			editor
+				.chain()
+				.focus()
+				.deleteRange(range)
+				.setImage({ src: url })
+				.run();
+		},
+		keywords: ['img', 'photo'],
+	},
+	{
+		id: 'message-info',
+		title: 'メッセージ',
+		description: '注釈付きのメッセージブロック',
+		icon: '💬',
+		command: ({ editor, range }) => {
+			editor
+				.chain()
+				.focus()
+				.deleteRange(range)
+				.setMessage('info' as MessageVariant)
+				.run();
+		},
+		keywords: ['message', 'info'],
+	},
+	{
+		id: 'message-alert',
+		title: '警告メッセージ',
+		description: '重要な注意や警告を強調',
+		icon: '⚠️',
+		command: ({ editor, range }) => {
+			editor
+				.chain()
+				.focus()
+				.deleteRange(range)
+				.setMessage('alert' as MessageVariant)
+				.run();
+		},
+		keywords: ['alert', 'warning'],
+	},
+	{
+		id: 'details',
+		title: '詳細',
+		description: '折りたたみ可能な詳細ブロック',
+		icon: '▼',
+		command: ({ editor, range }) => {
+			editor.chain().focus().deleteRange(range).insertDetails().run();
+		},
+		keywords: ['details', 'accordion'],
+	},
+	{
+		id: 'table',
+		title: '表',
+		description: 'ヘッダー付きの 2 x 2 テーブル',
+		icon: '⌗',
+		command: ({ editor, range }) => {
+			editor
+				.chain()
+				.focus()
+				.deleteRange(range)
+				.insertTable({ rows: 2, cols: 2, withHeaderRow: true })
+				.run();
+		},
+		keywords: ['table'],
+	},
+	{
+		id: 'footnote',
+		title: '脚注',
+		description: '脚注への参照を追加',
+		icon: '※',
+		command: ({ editor, range }) => {
+			const label = window.prompt('脚注の識別子を入力してください');
+			if (label === null) return;
+			editor
+				.chain()
+				.focus()
+				.deleteRange(range)
+				.insertFootnote({ id: label.trim() || undefined })
+				.run();
+		},
+		keywords: ['footnote'],
+	},
+	{
+		id: 'embed',
+		title: 'Embed',
+		description: 'URL を埋め込みカードとして追加',
+		icon: '⛓',
+		command: ({ editor, range }) => {
+			const service = window.prompt('埋め込みタイプ (youtube, tweet など) を入力してください');
+			if (!service) return;
+			const url = window.prompt('埋め込む URL を入力してください');
+			if (!url) return;
+			editor
+				.chain()
+				.focus()
+				.deleteRange(range)
+				.insertEmbed(service.trim(), url.trim())
+				.run();
+		},
+		keywords: ['embed', 'link', 'card'],
+	},
+];
 
 type RendererState = {
 	element: HTMLElement;

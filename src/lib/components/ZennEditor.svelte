@@ -1,15 +1,47 @@
 <script lang="ts">
-	import { tick } from 'svelte';
-	import type { Editor } from '@tiptap/core';
-
+	import { onMount } from 'svelte';
+	import type { Readable } from 'svelte/store';
+	import type { Editor as CoreEditor } from '@tiptap/core';
+	import type { Editor } from 'svelte-tiptap';
+	import StarterKit from '@tiptap/starter-kit';
+	import Link from '@tiptap/extension-link';
+	import Image from '@tiptap/extension-image';
+	import FileHandler from '@tiptap/extension-file-handler';
+	import Placeholder from '@tiptap/extension-placeholder';
+	import TaskList from '@tiptap/extension-task-list';
+	import TaskItem from '@tiptap/extension-task-item';
+	import Typography from '@tiptap/extension-typography';
+	import type { BubbleMenuOptions } from '@tiptap/extension-bubble-menu';
+	import type { FloatingMenuOptions } from '@tiptap/extension-floating-menu';
+	import { createEditor, EditorContent, BubbleMenu, FloatingMenu } from 'svelte-tiptap';
+	import SlashCommand, {
+		defaultSlashCommandItems,
+		type SlashCommandItem,
+	} from '$lib/editor/slashCommand';
 	import {
-		createZennEditor,
-		type CreateZennEditorProps,
-		type HeadingItem,
-		type ZennEditorInstance,
-	} from '$lib/editor/createZennEditor';
+		Message,
+		MessageContent,
+		Details,
+		DetailsSummary,
+		DetailsContent,
+		ZennCodeBlock,
+		ZennTable,
+		ZennTableCell,
+		ZennTableHeader,
+		ZennTableRow,
+		FootnoteReference,
+		Embed,
+		type MessageVariant,
+	} from '$lib/editor/extensions';
 
 	type ChangePayload = { html: string; markdown: string };
+
+	type HeadingItem = {
+		id: string;
+		level: number;
+		text: string;
+		pos: number;
+	};
 
 	interface Props {
 		initialContent?: string;
@@ -19,6 +51,8 @@
 		onChange?: (payload: ChangePayload) => void;
 		onMessage?: (payload: unknown) => void;
 		onReady?: () => void;
+		slashCommandItems?: SlashCommandItem[];
+		slashCommandMaxItems?: number;
 	}
 
 	const defaultRenderMarkdown = () => '';
@@ -32,6 +66,8 @@
 		onChange,
 		onMessage,
 		onReady,
+		slashCommandItems: providedSlashItems = defaultSlashCommandItems,
+		slashCommandMaxItems = 8,
 	}: Props = $props();
 
 	let editor = $state<Editor | null>(null);
@@ -49,14 +85,252 @@
 		canUndo: false,
 		canRedo: false,
 	});
-
-	let bubbleMenuElement: HTMLDivElement | null = null;
-	let floatingMenuElement: HTMLDivElement | null = null;
-	let slashCommandElement: HTMLDivElement | null = null;
 	let tocItems = $state<HeadingItem[]>([]);
 	let activeHeadingId = $state<string | null>(null);
+	let slashCommandElement: HTMLDivElement | null = null;
 
-	function syncToolbar(instance: Editor) {
+	let editorStore = $state<Readable<Editor> | null>(null);
+
+	let editorEventUnsubscribers: Array<() => void> = [];
+	let initialized = false;
+
+	const withFileHandler = (uploadHandler?: Props['onImageUpload']) =>
+		FileHandler.configure({
+			allowedMimeTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+			onDrop(instance, files) {
+				if (!uploadHandler) return;
+				uploadHandler(files)
+					.then((urls) => {
+						urls.forEach((src) =>
+							instance.chain().focus().setImage({ src }).run(),
+						);
+					})
+					.catch((error) => {
+						console.warn('Image upload failed', error);
+					});
+			},
+			onPaste(instance, files) {
+				if (!uploadHandler) return;
+				uploadHandler(files)
+					.then((urls) => {
+						urls.forEach((src) =>
+							instance.chain().focus().setImage({ src }).run(),
+						);
+					})
+					.catch((error) => {
+						console.warn('Image upload failed', error);
+					});
+			},
+		});
+
+	type BubbleMenuShouldShowProps = Parameters<
+		NonNullable<BubbleMenuOptions['shouldShow']>
+	>[0];
+
+	const shouldShowBubbleMenu = ({ editor }: BubbleMenuShouldShowProps) => {
+		const { state } = editor;
+		const { from, to } = state.selection;
+		if (from === to) return false;
+		return (
+			editor.isActive('paragraph') ||
+			editor.isActive('heading') ||
+			editor.isActive('listItem')
+		);
+	};
+
+	type FloatingMenuShouldShowProps = Parameters<
+		NonNullable<FloatingMenuOptions['shouldShow']>
+	>[0];
+
+	const shouldShowFloatingMenu = ({ editor, state }: FloatingMenuShouldShowProps) => {
+		const { selection } = state;
+		const fromPosition = selection.$from;
+		if (!fromPosition) return false;
+
+		const isAtStart = selection.empty && fromPosition.parentOffset === 0;
+		return (
+			isAtStart &&
+			editor.isActive('paragraph') &&
+			fromPosition.parent.textContent.length === 0
+		);
+	};
+
+	const slugifyHeading = (text: string) =>
+		text
+			.toLowerCase()
+			.trim()
+			.replace(/[^\p{Letter}\p{Number}\s-]/gu, '')
+			.replace(/\s+/g, '-')
+			.replace(/-+/g, '-')
+			.slice(0, 80) || 'heading';
+
+	const collectHeadings = (doc: CoreEditor['state']['doc']): HeadingItem[] => {
+		const seen = new Map<string, number>();
+		const headings: HeadingItem[] = [];
+
+		doc.descendants((node: any, pos: number) => {
+			if (node.type.name === 'heading') {
+				const level = Number(node.attrs.level ?? 1);
+				const text = node.textContent.trim();
+				const baseId = slugifyHeading(text || `heading-${level}`);
+				const count = seen.get(baseId) ?? 0;
+				const id = count === 0 ? baseId : `${baseId}-${count + 1}`;
+				seen.set(baseId, count + 1);
+
+				headings.push({
+					id,
+					level,
+					text,
+					pos,
+				});
+			}
+			return true;
+		});
+
+		return headings;
+	};
+
+	function updateHeadings(instance: CoreEditor) {
+		const headings = collectHeadings(instance.state.doc);
+		tocItems = headings;
+		updateActiveHeading(instance, headings);
+	}
+
+	function attachEditorEvents(instance: CoreEditor) {
+		editorEventUnsubscribers.forEach((unsubscribe) => unsubscribe());
+		editorEventUnsubscribers = [];
+
+		const handleSelectionUpdate = () => syncToolbar(instance);
+		const handleTransaction = () => syncToolbar(instance);
+		const handleFocus = () => syncToolbar(instance);
+		const handleBlur = () => syncToolbar(instance);
+
+		instance.on('selectionUpdate', handleSelectionUpdate);
+		instance.on('transaction', handleTransaction);
+		instance.on('focus', handleFocus);
+		instance.on('blur', handleBlur);
+
+		editorEventUnsubscribers = [
+			() => instance.off('selectionUpdate', handleSelectionUpdate),
+			() => instance.off('transaction', handleTransaction),
+			() => instance.off('focus', handleFocus),
+			() => instance.off('blur', handleBlur),
+		];
+	}
+
+	$effect(() => {
+		if (!editorStore) {
+			editorEventUnsubscribers.forEach((unsubscribe) => unsubscribe());
+			editorEventUnsubscribers = [];
+			editor = null;
+			return;
+		}
+
+		const instance = $editorStore;
+		if (!instance) return;
+
+		if (editor !== instance) {
+			editor = instance;
+			attachEditorEvents(instance);
+			if (!initialized) {
+				initialized = true;
+				onReady?.();
+			}
+		}
+
+		syncToolbar(instance);
+	});
+
+	onMount(() => {
+		const extensions = [
+			StarterKit.configure({
+				codeBlock: false,
+				bulletList: {
+					keepMarks: true,
+				},
+				orderedList: {
+					keepMarks: true,
+				},
+				heading: {
+					levels: [1, 2, 3, 4],
+				},
+			}),
+			ZennCodeBlock,
+			Message,
+			MessageContent,
+			Details,
+			DetailsSummary,
+			DetailsContent,
+			ZennTable,
+			ZennTableRow,
+			ZennTableHeader,
+			ZennTableCell,
+			FootnoteReference,
+			Embed,
+			Link.configure({
+				openOnClick: false,
+				autolink: true,
+				linkOnPaste: true,
+				HTMLAttributes: {
+					rel: 'noopener noreferrer nofollow',
+					target: '_blank',
+				},
+			}),
+			Image.configure({
+				allowBase64: false,
+				inline: false,
+			}),
+			Typography,
+			TaskList,
+			TaskItem.configure({
+				nested: true,
+			}),
+			Placeholder.configure({
+				placeholder,
+			}),
+			withFileHandler(onImageUpload),
+			SlashCommand.configure({
+				element: slashCommandElement ?? undefined,
+				items: providedSlashItems,
+				maxItems: slashCommandMaxItems,
+			}),
+		] as const;
+
+		const store = createEditor({
+			extensions: [...extensions],
+			content: initialContent,
+			onCreate: ({ editor }) => {
+				updateHeadings(editor);
+			},
+			onUpdate: ({ editor }) => {
+				const html = editor.getHTML();
+				const markdown = renderMarkdown(editor.state.doc);
+				onChange?.({ html, markdown });
+				updateHeadings(editor);
+			},
+			onTransaction: ({ transaction }) => {
+				const message = transaction.getMeta('message');
+				if (message) onMessage?.(message);
+			},
+			editorProps: {
+				attributes: {
+					class: 'zenn-editor__content znc',
+					spellcheck: 'false',
+				},
+			},
+		});
+
+		editorStore = store;
+
+		return () => {
+			editorEventUnsubscribers.forEach((unsubscribe) => unsubscribe());
+			editorEventUnsubscribers = [];
+			editor = null;
+			editorStore = null;
+		};
+	});
+
+	function syncToolbar(instance: CoreEditor) {
 		toolbarState = {
 			block: instance.isActive('heading', { level: 2 })
 				? 'h2'
@@ -64,6 +338,12 @@
 				? 'h3'
 				: instance.isActive('heading', { level: 4 })
 				? 'h4'
+				: instance.isActive('message', { variant: 'info' })
+				? 'message'
+				: instance.isActive('message', { variant: 'alert' })
+				? 'alert'
+				: instance.isActive('details')
+				? 'details'
 				: instance.isActive('blockquote')
 				? 'blockquote'
 				: instance.isActive('bulletList')
@@ -88,13 +368,16 @@
 		updateActiveHeading(instance);
 	}
 
-	function run(command: (instance: Editor) => void) {
+	function run(command: (instance: CoreEditor) => void) {
 		if (!editor) return;
 		command(editor);
 		syncToolbar(editor);
 	}
 
-	function updateActiveHeading(instance: Editor, headings: HeadingItem[] = tocItems) {
+	function updateActiveHeading(
+		instance: CoreEditor,
+		headings: HeadingItem[] = tocItems,
+	) {
 		if (!headings.length) {
 			activeHeadingId = null;
 			return;
@@ -111,120 +394,31 @@
 		activeHeadingId = current;
 	}
 
-	function bubbleMenu(node: HTMLDivElement) {
-		bubbleMenuElement = node;
-		return {
-			destroy() {
-				if (bubbleMenuElement === node) {
-					bubbleMenuElement = null;
-				}
-			},
-		};
-	}
-
-	function floatingMenu(node: HTMLDivElement) {
-		floatingMenuElement = node;
-		return {
-			destroy() {
-				if (floatingMenuElement === node) {
-					floatingMenuElement = null;
-				}
-			},
-		};
-	}
-
-	function slashMenu(node: HTMLDivElement) {
-		slashCommandElement = node;
-		return {
-			destroy() {
-				if (slashCommandElement === node) {
-					slashCommandElement = null;
-				}
-			},
-		};
-	}
-
-	function editorHost(node: HTMLDivElement) {
-		let destroyed = false;
-		let activeUnsubscribers: Array<() => void> = [];
-		let activeInstance: Editor | null = null;
-
-		async function initialize() {
-			await tick();
-			if (destroyed) return;
-
-			const instancePayload = createZennEditor({
-				target: node,
-				bubbleMenuElement,
-				floatingMenuElement,
-				slashCommandElement,
-				initialContent,
-				placeholder,
-				renderMarkdown,
-				onImageUpload,
-				onMessage,
-				onChange: (html, markdown) => {
-					onChange?.({ html, markdown });
-				},
-				onHeadingsChange: (headings) => {
-					tocItems = headings;
-					if (editor) {
-						updateActiveHeading(editor, headings);
-					}
-				},
-			} satisfies CreateZennEditorProps);
-			const { editor: instance } = instancePayload;
-
-			editor = instance;
-			syncToolbar(instance);
-			activeInstance = instance;
-
-			const handleSelectionUpdate = () => syncToolbar(instance);
-			const handleTransaction = () => syncToolbar(instance);
-			const handleFocus = () => syncToolbar(instance);
-			const handleBlur = () => syncToolbar(instance);
-
-			instance.on('selectionUpdate', handleSelectionUpdate);
-			instance.on('transaction', handleTransaction);
-			instance.on('focus', handleFocus);
-			instance.on('blur', handleBlur);
-
-			activeUnsubscribers = [
-				() => instance.off('selectionUpdate', handleSelectionUpdate),
-				() => instance.off('transaction', handleTransaction),
-				() => instance.off('focus', handleFocus),
-				() => instance.off('blur', handleBlur),
-			];
-
-			onReady?.();
-		}
-
-		initialize();
-
-		return {
-			destroy() {
-				destroyed = true;
-				activeUnsubscribers.forEach((unsubscribe) => unsubscribe());
-				activeUnsubscribers = [];
-				const current = activeInstance as unknown;
-				if (
-					current &&
-					typeof (current as { destroy?: unknown }).destroy === 'function'
-				) {
-					(current as { destroy: () => void }).destroy();
-				}
-				if (editor === activeInstance) {
-					editor = null;
-				}
-				activeInstance = null;
-			},
-		};
-	}
-
 	const withPrevent = (handler: () => void) => (event: MouseEvent) => {
 		event.preventDefault();
 		handler();
 	};
+
+	function insertTable(rows = 2, cols = 2) {
+		if (!editor) return;
+		editor.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run();
+	}
+
+	function promptFootnote() {
+		if (!editor) return;
+		const id = window.prompt('脚注の識別子を入力してください');
+		if (id === null) return;
+		editor.chain().focus().insertFootnote({ id: id.trim() || undefined }).run();
+	}
+
+	function promptEmbed() {
+		if (!editor) return;
+		const service = window.prompt('埋め込みタイプ (youtube, tweet, codepen など)');
+		if (!service) return;
+		const url = window.prompt('埋め込む URL を入力してください');
+		if (!url) return;
+		editor.commands.insertEmbed(service.trim(), url.trim());
+	}
 
 	const setLink = () => {
 		if (!editor) return;
@@ -237,7 +431,12 @@
 		}
 
 		run((instance) =>
-			instance.chain().focus().extendMarkRange('link').setLink({ href: url }).run()
+			instance
+				.chain()
+				.focus()
+				.extendMarkRange('link')
+				.setLink({ href: url })
+				.run(),
 		);
 	};
 
@@ -327,6 +526,42 @@
 					</button>
 					<button
 						type="button"
+						class:active={toolbarState.block === 'message'}
+						onmousedown={withPrevent(() =>
+							run((instance) => {
+				instance.chain().focus().setMessage('info' as MessageVariant).run();
+							})
+						)}
+						aria-pressed={toolbarState.block === 'message'}
+					>
+						メッセージ
+					</button>
+					<button
+						type="button"
+						class:active={toolbarState.block === 'alert'}
+						onmousedown={withPrevent(() =>
+							run((instance) => {
+				instance.chain().focus().setMessage('alert' as MessageVariant).run();
+							})
+						)}
+						aria-pressed={toolbarState.block === 'alert'}
+					>
+						警告
+					</button>
+					<button
+						type="button"
+						class:active={toolbarState.block === 'details'}
+						onmousedown={withPrevent(() =>
+							run((instance) => {
+				instance.chain().focus().insertDetails().run();
+							})
+						)}
+						aria-pressed={toolbarState.block === 'details'}
+					>
+						詳細
+					</button>
+					<button
+						type="button"
 						class:active={toolbarState.block === 'blockquote'}
 						onmousedown={withPrevent(() =>
 							run((instance) => instance.chain().focus().toggleBlockquote().run())
@@ -380,6 +615,9 @@
 					<button type="button" onmousedown={withPrevent(() => setLink())} aria-pressed={toolbarState.link}>
 						🔗
 					</button>
+					<button type="button" onmousedown={withPrevent(() => promptFootnote())}>
+						脚注
+					</button>
 				</div>
 				<div class="zenn-editor__toolbar-group">
 					<button
@@ -414,6 +652,12 @@
 					</button>
 					<button
 						type="button"
+						onmousedown={withPrevent(() => insertTable())}
+					>
+						表
+					</button>
+					<button
+						type="button"
 						onmousedown={withPrevent(() =>
 							run((instance) => instance.chain().focus().setHorizontalRule().run())
 						)}
@@ -427,6 +671,9 @@
 						)}
 					>
 						&lt;/&gt;
+					</button>
+					<button type="button" onmousedown={withPrevent(() => promptEmbed())}>
+						Embed
 					</button>
 				</div>
 				<div class="zenn-editor__toolbar-group">
@@ -453,82 +700,110 @@
 				</div>
 			</div>
 
-			<div class="zenn-editor__surface">
-				<div class="zenn-editor__floating-menu" use:floatingMenu>
-					<button
-						onmousedown={withPrevent(() =>
-							run((instance) => instance.chain().focus().setParagraph().run())
-						)}
-						class:active={toolbarState.block === 'paragraph'}
-					>
-						本文
-					</button>
-					<button
-						onmousedown={withPrevent(() =>
-							run((instance) => instance.chain().focus().toggleHeading({ level: 2 }).run())
-						)}
-						class:active={toolbarState.block === 'h2'}
-					>
-						H2
-					</button>
-					<button
-						onmousedown={withPrevent(() =>
-							run((instance) => instance.chain().focus().toggleHeading({ level: 3 }).run())
-						)}
-						class:active={toolbarState.block === 'h3'}
-					>
-						H3
-					</button>
-					<button
-						onmousedown={withPrevent(() =>
-							run((instance) => instance.chain().focus().toggleBlockquote().run())
-						)}
-						class:active={toolbarState.block === 'blockquote'}
-					>
-						引用
-					</button>
-					<button
-						onmousedown={withPrevent(() =>
-							run((instance) => instance.chain().focus().toggleCodeBlock().run())
-						)}
-						class:active={toolbarState.code}
-					>
-						&lt;/&gt;
-					</button>
+				<div class="zenn-editor__surface">
+					{#if editorStore}
+						<FloatingMenu
+							editor={$editorStore!}
+							class="zenn-editor__floating-menu"
+							shouldShow={shouldShowFloatingMenu}
+						>
+						{#snippet children()}
+							<button
+								onmousedown={withPrevent(() =>
+									run((instance) => instance.chain().focus().setParagraph().run())
+								)}
+								class:active={toolbarState.block === 'paragraph'}
+							>
+								本文
+							</button>
+							<button
+								onmousedown={withPrevent(() =>
+									run((instance) =>
+										instance.chain().focus().toggleHeading({ level: 2 }).run()
+									)
+								)}
+								class:active={toolbarState.block === 'h2'}
+							>
+								H2
+							</button>
+							<button
+								onmousedown={withPrevent(() =>
+									run((instance) =>
+										instance.chain().focus().toggleHeading({ level: 3 }).run()
+									)
+								)}
+								class:active={toolbarState.block === 'h3'}
+							>
+								H3
+							</button>
+							<button
+								onmousedown={withPrevent(() =>
+									run((instance) => instance.chain().focus().toggleBlockquote().run())
+								)}
+								class:active={toolbarState.block === 'blockquote'}
+							>
+								引用
+							</button>
+							<button
+								onmousedown={withPrevent(() =>
+									run((instance) => instance.chain().focus().toggleCodeBlock().run())
+								)}
+								class:active={toolbarState.code}
+							>
+								&lt;/&gt;
+							</button>
+						{/snippet}
+						</FloatingMenu>
+
+						<BubbleMenu
+							editor={$editorStore!}
+							class="zenn-editor__bubble-menu"
+							shouldShow={shouldShowBubbleMenu}
+						>
+						{#snippet children()}
+							<button
+								onmousedown={withPrevent(() =>
+									run((instance) => instance.chain().focus().toggleBold().run())
+								)}
+								class:active={toolbarState.bold}
+							>
+								B
+							</button>
+							<button
+								onmousedown={withPrevent(() =>
+									run((instance) => instance.chain().focus().toggleItalic().run())
+								)}
+								class:active={toolbarState.italic}
+							>
+								I
+							</button>
+							<button
+								onmousedown={withPrevent(() =>
+									run((instance) => instance.chain().focus().toggleCode().run())
+								)}
+								class:active={toolbarState.code}
+							>
+								<span class="code-symbol">&#123;&#125;</span>
+							</button>
+							<button
+								onmousedown={withPrevent(() => setLink())}
+								class:active={toolbarState.link}
+							>
+								🔗
+							</button>
+						{/snippet}
+					</BubbleMenu>
+					{/if}
+
+					<div class="zenn-editor__slash-menu" bind:this={slashCommandElement}></div>
+
+					{#if editorStore}
+						<EditorContent
+							editor={$editorStore!}
+							class="zenn-editor__host zenn-editor__content"
+						/>
+					{/if}
 				</div>
-
-				<div class="zenn-editor__bubble-menu" use:bubbleMenu>
-					<button
-						onmousedown={withPrevent(() =>
-							run((instance) => instance.chain().focus().toggleBold().run())
-						)}
-						class:active={toolbarState.bold}
-					>
-						B
-					</button>
-					<button
-						onmousedown={withPrevent(() =>
-							run((instance) => instance.chain().focus().toggleItalic().run())
-						)}
-						class:active={toolbarState.italic}
-					>
-						I
-					</button>
-					<button
-						onmousedown={withPrevent(() =>
-							run((instance) => instance.chain().focus().toggleCode().run())
-						)}
-						class:active={toolbarState.code}
-					>
-						<span class="code-symbol">&#123;&#125;</span>
-					</button>
-					<button onmousedown={withPrevent(() => setLink())} class:active={toolbarState.link}>🔗</button>
-				</div>
-
-				<div class="zenn-editor__slash-menu" use:slashMenu></div>
-
-				<div class="zenn-editor__host" use:editorHost></div>
-			</div>
 		</div>
 	</div>
 </div>
@@ -746,6 +1021,141 @@
 		display: grid;
 		place-items: center;
 		font-size: 0.85rem;
+	}
+
+	:global(.msg) {
+		position: relative;
+		margin: 1rem 0;
+		padding: 1rem 1.25rem 1rem 3rem;
+		border-radius: 16px;
+		background: rgba(15, 147, 255, 0.08);
+		border: 1px solid rgba(15, 147, 255, 0.25);
+	}
+
+	:global(.msg.alert) {
+		background: rgba(255, 99, 99, 0.08);
+		border-color: rgba(255, 99, 99, 0.35);
+	}
+
+	:global(.msg::before) {
+		content: '!';
+		position: absolute;
+		left: 1rem;
+		top: 1rem;
+		width: 1.5rem;
+		height: 1.5rem;
+		border-radius: 50%;
+		display: grid;
+		place-items: center;
+		background: rgba(15, 147, 255, 0.2);
+		color: #0f93ff;
+		font-weight: 700;
+	}
+
+	:global(.msg.alert::before) {
+		background: rgba(255, 99, 99, 0.2);
+		color: #ff6363;
+	}
+
+	:global(.msg .msg-content > :first-child) {
+		margin-top: 0;
+	}
+
+	:global(.msg .msg-content > :last-child) {
+		margin-bottom: 0;
+	}
+
+	:global(details) {
+		margin: 1rem 0;
+		border: 1px solid #dfe6f1;
+		border-radius: 14px;
+		background: #f9fbff;
+		padding: 0.5rem 1rem;
+	}
+
+	:global(details summary) {
+		cursor: pointer;
+		font-weight: 600;
+		outline: none;
+	}
+
+	:global(.details-content) {
+		padding: 0.75rem 0 0.25rem;
+	}
+
+	:global(.zenn-embed) {
+		border: 1px solid rgba(15, 147, 255, 0.2);
+		border-radius: 16px;
+		background: rgba(15, 147, 255, 0.05);
+		margin: 1rem 0;
+	}
+
+	:global(.zenn-embed__inner) {
+		padding: 1rem;
+	}
+
+	:global(.zenn-embed__inner a) {
+		color: #0f93ff;
+		font-weight: 600;
+		word-break: break-all;
+	}
+
+	:global(pre[data-filename]) {
+		position: relative;
+		padding-top: 2.25rem;
+	}
+
+	:global(pre[data-filename]::before) {
+		content: attr(data-filename);
+		position: absolute;
+		left: 1rem;
+		top: 0.65rem;
+		font-size: 0.75rem;
+		text-transform: none;
+		letter-spacing: 0;
+		color: rgba(255, 255, 255, 0.7);
+	}
+
+	:global(pre[data-diff='true'] code) {
+		counter-reset: diff;
+	}
+
+	:global(pre[data-diff='true'] code span.inserted) {
+		background: rgba(56, 189, 116, 0.2);
+	}
+
+	:global(pre[data-diff='true'] code span.deleted) {
+		background: rgba(248, 113, 113, 0.2);
+	}
+
+	:global(.footnote-ref) {
+		font-size: 0.75rem;
+		line-height: 1;
+		margin-left: 0.15rem;
+	}
+
+	:global(.footnote-ref a) {
+		text-decoration: none;
+		color: #0f93ff;
+	}
+
+	:global(table.zenn-table) {
+		border-collapse: collapse;
+		width: 100%;
+		margin: 1rem 0;
+	}
+
+	:global(table.zenn-table th),
+	:global(table.zenn-table td) {
+		border: 1px solid rgba(15, 147, 255, 0.2);
+		padding: 0.5rem 0.75rem;
+		background: #fff;
+		text-align: left;
+	}
+
+	:global(table.zenn-table thead th) {
+		background: rgba(15, 147, 255, 0.08);
+		font-weight: 700;
 	}
 
 	@media (max-width: 1024px) {
