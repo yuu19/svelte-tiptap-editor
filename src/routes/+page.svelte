@@ -1,338 +1,351 @@
 <script lang="ts">
-import { afterNavigate } from '$app/navigation';
-import { dev } from '$app/environment';
-import ZennEditor from '$lib/components/ZennEditor.svelte';
-import 'zenn-content-css';
+import { goto } from '$app/navigation';
 import MarkdownIt from 'markdown-it';
-import TurndownService from 'turndown';
-import { fromAction } from 'svelte/attachments';
-import type { entries } from '$lib/server/db/schema';
-import type { JSONContent } from '@tiptap/core';
-import SuperDebug from 'sveltekit-superforms/SuperDebug.svelte';
 
-	type Entry = typeof entries.$inferSelect;
+type Entry = {
+	id: string;
+	title: string | null;
+	markdown: string | null;
+	html: string | null;
+	contentJson: string;
+	jsonVersion: number;
+	updatedAt: string | Date | null;
+};
 
-	type EditorState = {
-		entryId: string | null;
-		title: string;
-		previewHtml: string;
-		previewMarkdown: string;
-		contentJson: JSONContent | null;
-		jsonVersion: number;
-		lastSavedAt: Date | null;
-	};
+const props = $props<{ data: { entries: Entry[] } }>();
 
-	type EditorChangePayload = {
-		html: string;
-		markdown: string;
-		json: JSONContent;
-	};
-
-const JSON_SCHEMA_VERSION = 1;
 const markdownIt = new MarkdownIt({ html: true, linkify: true, breaks: true });
-const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
 
-const props = $props<{ data: { entry: Entry | null } }>();
+	const formatter = new Intl.DateTimeFormat('ja-JP', {
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit'
+	});
 
-	function parseContentJson(value: unknown): JSONContent | null {
-		if (!value) return null;
-		try {
-			const parsed = typeof value === 'string' ? JSON.parse(value) : value;
-			if (!parsed || typeof parsed !== 'object') return null;
-			if (typeof (parsed as { type?: unknown }).type !== 'string') return null;
-			return parsed as JSONContent;
-		} catch {
-			return null;
-		}
+let keyword = $state('');
+const entryList = props.data.entries;
+const filteredEntries = $derived(
+	!keyword
+		? entryList
+		: entryList.filter((entry: Entry) => {
+			const needle = keyword.toLowerCase();
+			return (
+				(entry.title ?? '').toLowerCase().includes(needle) ||
+				(entry.markdown ?? '').toLowerCase().includes(needle)
+			);
+		})
+);
+
+let previewEntry = $state<Entry | null>(null);
+let isPreviewOpen = $state(false);
+let previewHtml = $state('');
+
+	function handleCreate() {
+		goto('/new');
 	}
 
-	function createEditorState(entry: Entry | null): EditorState {
-		const markdown = entry?.markdown ?? '';
-		const html = entry?.html ?? (markdown ? markdownIt.render(markdown) : '<p>はじめよう</p>');
-		const contentJson = parseContentJson(entry?.contentJson);
-		const jsonVersion = entry?.jsonVersion ?? JSON_SCHEMA_VERSION;
-
-		return {
-			entryId: entry?.id ?? null,
-			title: entry?.title ?? 'Untitled',
-			previewHtml: html,
-			previewMarkdown: markdown || turndown.turndown(html),
-			contentJson,
-			jsonVersion,
-			lastSavedAt: entry?.updatedAt ? new Date(entry.updatedAt) : null
-		};
+	function handleEdit(id: string) {
+		goto(`/${id}`);
 	}
 
-	function createEditorKey(state: EditorState): string {
-		return `${state.entryId ?? 'new'}:${state.jsonVersion}`;
+	function handlePreview(entry: Entry) {
+		previewEntry = entry;
+		previewHtml = entry.html ?? markdownIt.render(entry.markdown ?? '');
+		isPreviewOpen = true;
 	}
 
-	function createEntrySignature(entry: Entry | null): string {
-		if (!entry) return 'new';
-		const updatedAt = entry.updatedAt ? new Date(entry.updatedAt).getTime() : 0;
-		const version = entry.jsonVersion ?? JSON_SCHEMA_VERSION;
-		return `${entry.id ?? 'new'}:${updatedAt}:${version}`;
+	function closePreview() {
+		isPreviewOpen = false;
 	}
 
-const initialEditorState = createEditorState(props.data.entry);
-let editor = $state<EditorState>(initialEditorState);
-let editorKey = $state<string>(createEditorKey(initialEditorState));
-let loadedEntrySignature = $state<string>(createEntrySignature(props.data.entry));
-	let isSaving = $state(false);
-	let saveError = $state<string | null>(null);
-
-	const jsonPreview = $derived.by(() =>
-		editor.contentJson ? JSON.stringify(editor.contentJson, null, 2) : ''
-	);
-
-	function applyEntry(entry: Entry | null) {
-		const snapshot = createEditorState(entry);
-		editor = snapshot;
-	editorKey = createEditorKey(snapshot);
-	loadedEntrySignature = createEntrySignature(entry);
-}
-
-afterNavigate(() => {
-	applyEntry(props.data.entry);
-});
-
-$effect(() => {
-	const signature = createEntrySignature(props.data.entry);
-	if (signature !== loadedEntrySignature) {
-		applyEntry(props.data.entry);
-	}
-});
-
-	function renderMarkdown(_: unknown, html: string): string {
-		return turndown.turndown(html);
-	}
-
-	async function onImageUpload(files: File[]) {
-		return files.map((file) => URL.createObjectURL(file));
-	}
-
-	function handleChange({ html, markdown, json }: EditorChangePayload) {
-		editor.previewHtml = html;
-		editor.previewMarkdown = markdown;
-	editor.contentJson = json;
-	editor.jsonVersion = JSON_SCHEMA_VERSION;
-}
-
-function handleMessage(message: unknown) {
-	console.log('transaction meta message:', message);
-}
-
-function sanitizeHtml(html: string): string {
-	return html
-		.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
-		.replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, '')
-		.replace(/ on[a-z]+="[^"]*"/gi, '')
-		.replace(/ on[a-z]+='[^']*'/gi, '');
-}
-
-function htmlPreview(node: HTMLElement, html: string) {
-	const setContent = (value: string) => {
-		node.innerHTML = sanitizeHtml(value);
-	};
-
-	setContent(html);
-
-	return {
-		update(value: string) {
-			setContent(value);
-		},
-		destroy() {
-			node.innerHTML = '';
-		}
-	};
-}
-
-	async function saveEntry() {
-		if (!editor.previewHtml.trim()) return;
-		if (!editor.contentJson) {
-			saveError = 'エディタ状態を取得できませんでした';
-			return;
-		}
-		isSaving = true;
-		saveError = null;
-		try {
-			const response = await fetch('/api/entries', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					id: editor.entryId,
-					title: editor.title,
-					markdown: editor.previewMarkdown,
-					html: editor.previewHtml,
-					contentJson: editor.contentJson,
-					jsonVersion: editor.jsonVersion
-				})
-			});
-
-			if (!response.ok) {
-				const text = await response.text();
-				throw new Error(text || 'Failed to save entry');
-			}
-
-			const { entry } = (await response.json()) as { entry: Entry };
-			applyEntry(entry);
-		} catch (err) {
-			saveError = err instanceof Error ? err.message : '保存に失敗しました';
-		} finally {
-			isSaving = false;
-		}
+	function calculateCharacters(markdown: string | null) {
+		if (!markdown) return 0;
+		return markdown.replace(/\s+/g, '').length;
 	}
 </script>
 
-<div class="page-layout">
-	<header class="toolbar">
-		<input
-			type="text"
-			class="title-input"
-			bind:value={editor.title}
-			placeholder="タイトルを入力"
-		/>
-		<button type="button" class="save-button" disabled={isSaving} onclick={saveEntry}>
-			{isSaving ? '保存中...' : editor.entryId ? '更新する' : '新規保存'}
+<div class="page">
+	<header class="page-header">
+		<h1>記事の管理</h1>
+		<button class="create-button" type="button" onclick={handleCreate}>
+			<span>＋</span>
+			<span>新規作成</span>
 		</button>
-		{#if editor.lastSavedAt}
-			<span class="status">最終保存: {editor.lastSavedAt.toLocaleString()}</span>
-		{/if}
-		{#if saveError}
-			<span class="status error">{saveError}</span>
-		{/if}
 	</header>
 
-	<section class="editor-pane">
-		{#key editorKey}
-			<ZennEditor
-				initialContent={editor.previewHtml}
-				initialJson={editor.contentJson}
-				{renderMarkdown}
-				{onImageUpload}
-				onChange={handleChange}
-				onMessage={handleMessage}
-			/>
-		{/key}
-	</section>
+	<div class="search-box">
+		<div class="search-icon">🔍</div>
+		<input
+			type="search"
+			placeholder="タイトルやトピックで検索"
+			bind:value={keyword}
+		/>
+	</div>
 
-	<section class="preview-pane">
-		<h2>プレビュー</h2>
-		<div class="preview-render znc" {@attach fromAction(htmlPreview, () => editor.previewHtml)}></div>
+	{#if filteredEntries.length === 0}
+		<p class="empty">記事がまだありません。</p>
+	{:else}
+		<ul class="entry-list">
+			{#each filteredEntries as entry}
+				<li class="entry-item">
+					<div class="entry-content">
+						<h2>{entry.title ?? 'Untitled'}</h2>
+						<div class="entry-meta">
+							<span class="badge">下書き</span>
+							<span>{entry.updatedAt ? formatter.format(new Date(entry.updatedAt)) : '---'}に本文更新</span>
+							<span>· {calculateCharacters(entry.markdown)}字</span>
+						</div>
+					</div>
+					<div class="entry-actions">
+					<button type="button" title="プレビュー" onclick={() => handlePreview(entry)}>▶</button>
+					<button type="button" title="編集" onclick={() => handleEdit(entry.id)}>✎</button>
+						<button type="button" title="詳細">⌄</button>
+					</div>
+				</li>
+			{/each}
+		</ul>
+	{/if}
 
-		<h3>Markdown スナップショット</h3>
-		<pre class="preview-markdown">{editor.previewMarkdown}</pre>
-
-		<h3>ProseMirror JSON v{editor.jsonVersion}</h3>
-		<pre class="preview-json">{jsonPreview}</pre>
-	</section>
-
-	{#if dev}
-		<section class="debug-pane">
-			<h2>Debug</h2>
-			<SuperDebug label="Data props" data={props.data} status={false} />
-			<SuperDebug label="Editor state" data={editor} status={false} />
-		</section>
+	{#if isPreviewOpen && previewEntry}
+		<div
+			class="preview-overlay"
+			role="button"
+			tabindex="0"
+			onclick={closePreview}
+			onkeydown={(event) => {
+				if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
+					event.preventDefault();
+					closePreview();
+				}
+			}}
+		>
+			<div
+				class="preview-dialog"
+				role="dialog"
+				aria-modal="true"
+				aria-label="記事プレビュー"
+				tabindex="-1"
+				onpointerdown={(event) => event.stopPropagation()}
+			>
+				<header class="preview-header">
+					<h2>{previewEntry.title ?? 'Untitled'}</h2>
+					<button type="button" class="close-button" onclick={closePreview} aria-label="閉じる">✕</button>
+				</header>
+				<section class="preview-body">
+					<article class="zenn-preview">{@html previewHtml}</article>
+				</section>
+			</div>
+		</div>
 	{/if}
 </div>
 
 <style>
-	.page-layout {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr);
-		gap: 2rem;
-		padding: 2rem 0;
+	.page {
+		max-width: 960px;
+		margin: 0 auto;
+		padding: 3rem 1.5rem;
+		font-family: 'Noto Sans JP', system-ui, sans-serif;
 	}
 
-	@media (max-width: 1024px) {
-		.page-layout {
-			grid-template-columns: 1fr;
-		}
-	}
-
-	.preview-pane {
+	.page-header {
 		display: flex;
-		flex-direction: column;
-		gap: 1rem;
-		padding: 1.25rem;
-		border: 1px solid #e6edf5;
-		border-radius: 16px;
-		background: #f9fbff;
-	}
-
-	.debug-pane {
-		margin-top: 2rem;
-		border: 1px solid #e6edf5;
-		border-radius: 16px;
-		padding: 1.25rem;
-		background: #fff;
-		display: flex;
-		flex-direction: column;
-		gap: 1rem;
-	}
-
-	.preview-render {
-		padding: 1rem;
-		border-radius: 12px;
-		border: 1px solid #d8e1f0;
-		background: #fff;
-		overflow: hidden;
-	}
-
-	.preview-markdown,
-	.preview-json {
-		margin: 0;
-		padding: 1rem;
-		border-radius: 12px;
-		background: #0d223a;
-		color: #edf2ff;
-		max-height: 320px;
-		overflow: auto;
-		font-size: 0.85rem;
-	}
-
-	.preview-json {
-		background: #0f172a;
-		font-family: 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
-			monospace;
-	}
-
-	.toolbar {
-		display: flex;
+		justify-content: space-between;
 		align-items: center;
-		gap: 1rem;
-		margin-bottom: 1rem;
+		margin-bottom: 2rem;
 	}
 
-	.title-input {
-		flex: 1 1 auto;
-		padding: 0.5rem 0.75rem;
-		border-radius: 10px;
-		border: 1px solid #ccd6e0;
+	.page-header h1 {
+		font-size: 2rem;
+		font-weight: 700;
+		margin: 0;
+		color: #1d2333;
+	}
+
+	.create-button {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 0.65rem 1.2rem;
+		border-radius: 999px;
+		border: 1px solid rgba(15, 147, 255, 0.25);
+		background: #fff;
+		color: #0f93ff;
+		font-weight: 600;
+		cursor: pointer;
+		transition: background 0.2s ease, color 0.2s ease;
+	}
+
+	.create-button:hover {
+		background: rgba(15, 147, 255, 0.08);
+	}
+
+	.search-box {
+		position: relative;
+		margin-bottom: 2rem;
+	}
+
+	.search-box input {
+		width: 100%;
+		padding: 1.1rem 1.1rem 1.1rem 3rem;
+		border-radius: 999px;
+		border: 1px solid #e3ebf3;
+		font-size: 1rem;
+		background: #fafbfd;
+	}
+
+	.search-icon {
+		position: absolute;
+		left: 1.1rem;
+		top: 50%;
+		transform: translateY(-50%);
+		color: #a5b5c5;
 		font-size: 1rem;
 	}
 
-	.save-button {
-		padding: 0.5rem 1.25rem;
-		border-radius: 12px;
-		border: none;
-		background: #0f93ff;
-		color: #fff;
+	.entry-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 1.5rem;
+	}
+
+	.entry-item {
+		display: flex;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 1.25rem 1.5rem;
+		border: 1px solid #ecf1f7;
+		border-radius: 18px;
+		background: #fff;
+		box-shadow: 0 12px 30px -24px rgba(15, 32, 68, 0.45);
+	}
+
+	.entry-content h2 {
+		margin: 0 0 0.5rem;
+		font-size: 1.35rem;
+		color: #1b2233;
+	}
+
+	.entry-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		font-size: 0.9rem;
+		color: #5c6f84;
+	}
+
+	.badge {
+		display: inline-flex;
+		align-items: center;
+		padding: 0.2rem 0.55rem;
+		border-radius: 8px;
+		border: 1px solid rgba(15, 147, 255, 0.2);
+		color: #0f93ff;
 		font-weight: 600;
+		background: rgba(15, 147, 255, 0.08);
+	}
+
+	.entry-actions {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+
+	.entry-actions button {
+		width: 40px;
+		height: 40px;
+		border-radius: 50%;
+		border: none;
+		background: rgba(13, 34, 58, 0.04);
+		color: #4d5d6f;
+		font-size: 1.1rem;
 		cursor: pointer;
+		transition: background 0.2s ease, color 0.2s ease;
 	}
 
-	.save-button:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
+	.entry-actions button:hover {
+		background: rgba(15, 147, 255, 0.12);
+		color: #0f93ff;
 	}
 
-	.status {
-		font-size: 0.85rem;
-		color: rgba(27, 39, 51, 0.75);
+	.preview-overlay {
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background: rgba(16, 28, 45, 0.55);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 2rem;
+		z-index: 1000;
 	}
 
-	.status.error {
-		color: #ff4d4d;
+	.preview-dialog {
+		max-width: 880px;
+		width: min(880px, 100%);
+		max-height: 90vh;
+		background: #fff;
+		border-radius: 18px;
+		display: flex;
+		flex-direction: column;
+		box-shadow: 0 28px 64px -32px rgba(13, 34, 58, 0.55);
+		overflow: hidden;
+	}
+
+	.preview-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 1.25rem 1.5rem;
+		border-bottom: 1px solid #eef2f8;
+	}
+
+	.preview-header h2 {
+		margin: 0;
+		font-size: 1.4rem;
+		font-weight: 700;
+		color: #1b2233;
+	}
+
+	.close-button {
+		border: none;
+		background: transparent;
+		font-size: 1.3rem;
+		cursor: pointer;
+		color: #5a6b7d;
+	}
+
+	.preview-body {
+		padding: 1.5rem;
+		overflow-y: auto;
+	}
+
+	.zenn-preview :global(*:first-child) {
+		margin-top: 0;
+	}
+
+	.zenn-preview :global(*:last-child) {
+		margin-bottom: 0;
+	}
+
+	.empty {
+		margin-top: 4rem;
+		text-align: center;
+		color: #8a97aa;
+	}
+
+	@media (max-width: 720px) {
+		.entry-item {
+			flex-direction: column;
+			align-items: flex-start;
+		}
+
+		.entry-actions {
+			align-self: flex-end;
+		}
 	}
 </style>

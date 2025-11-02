@@ -560,9 +560,9 @@
 						type="button"
 						class:active={toolbarState.block === 'details'}
 						onmousedown={withPrevent(() =>
-							run((instance) => {
-				instance.chain().focus().insertDetails().run();
-							})
+						run((instance) => {
+				instance.chain().focus().setDetails().run();
+						})
 						)}
 						aria-pressed={toolbarState.block === 'details'}
 					>
@@ -1089,6 +1089,80 @@
 
 	:global(.details-content) {
 		padding: 0.75rem 0 0.25rem;
+	}
+
+	:global(.details) {
+		margin: 1rem 0;
+		border: 1px solid #dfe6f1;
+		border-radius: 14px;
+		background: #f9fbff;
+		padding: 0.5rem 1rem;
+	}
+
+	:global(.details[data-open]) {
+		background: #eef4ff;
+		border-color: rgba(15, 147, 255, 0.35);
+	}
+
+	:global(.details__inner) {
+		display: block;
+	}
+
+	:global(.details[data-open] .details-summary) {
+		border-bottom: 1px solid rgba(15, 147, 255, 0.15);
+	}
+
+	:global(.details-summary) {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		cursor: pointer;
+		font-weight: 600;
+		outline: none;
+		margin: 0;
+	}
+
+	:global(.details-toggle) {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.5rem;
+		height: 1.5rem;
+		border-radius: 999px;
+		border: 1px solid rgba(15, 147, 255, 0.25);
+		background: #fff;
+		cursor: pointer;
+		transition: transform 0.2s ease;
+	}
+
+	:global(.details-toggle:focus-visible) {
+		outline: 2px solid rgba(15, 147, 255, 0.5);
+		outline-offset: 2px;
+	}
+
+	:global(.details-toggle__icon) {
+		display: inline-block;
+		width: 0;
+		height: 0;
+		border-left: 5px solid transparent;
+		border-right: 5px solid transparent;
+		border-top: 7px solid #0f93ff;
+		transform: rotate(-90deg);
+		transition: transform 0.2s ease;
+	}
+
+	:global(.details[data-open] .details-toggle__icon),
+	:global(.details-toggle[data-open] .details-toggle__icon) {
+		transform: rotate(0deg);
+	}
+
+	:global(.details-summary__content) {
+		flex: 1 1 auto;
+		min-width: 0;
+	}
+
+	:global(.details:not([data-open]) .details-content) {
+		display: none;
 	}
 
 	:global(.zenn-embed) {

@@ -156,15 +156,15 @@ export const defaultSlashCommandItems: SlashCommandItem[] = [
 		keywords: ['alert', 'warning'],
 	},
 	{
-		id: 'details',
-		title: '詳細',
-		description: '折りたたみ可能な詳細ブロック',
-		icon: '▼',
-		command: ({ editor, range }) => {
-			editor.chain().focus().deleteRange(range).insertDetails().run();
-		},
-		keywords: ['details', 'accordion'],
+	id: 'details',
+	title: '詳細',
+	description: '折りたたみ可能な詳細ブロック',
+	icon: '▼',
+	command: ({ editor, range }) => {
+			editor.chain().focus().deleteRange(range).setDetails().run();
 	},
+	keywords: ['details', 'accordion'],
+},
 	{
 		id: 'table',
 		title: '表',
