@@ -265,7 +265,7 @@ function htmlPreview(node: HTMLElement, html: string) {
 		background: #f9fbff;
 	}
 
-	.debug-pane {
+	:global(.debug-pane) {
 		margin-top: 2rem;
 		border: 1px solid #e6edf5;
 		border-radius: 16px;

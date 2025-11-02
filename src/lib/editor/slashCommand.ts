@@ -405,12 +405,16 @@ export const SlashCommand = Extension.create<SlashCommandOptions>({
 	addProseMirrorPlugins() {
 		const options = this.options;
 
-		return [
+	return [
 			Suggestion({
 				editor: this.editor,
 				char: '/',
 				startOfLine: true,
 				allowSpaces: false,
+				allow: ({ state }) => {
+					const { $from } = state.selection;
+					return $from.parent.type.name === 'paragraph' && $from.depth === 1;
+				},
 				items: ({ query }) => {
 					const value = query?.toLowerCase() ?? '';
 
