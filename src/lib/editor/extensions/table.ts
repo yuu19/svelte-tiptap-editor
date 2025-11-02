@@ -4,7 +4,7 @@ import { TableCell } from '@tiptap/extension-table-cell';
 import { TableHeader } from '@tiptap/extension-table-header';
 import { TableRow } from '@tiptap/extension-table-row';
 
-const tableInputRegex = /^:::table(?:\s*(\d+)\s*[x×-]\s*(\d+))?\s$/;
+const tableInputRegex = /^:::table(?:(\d+)\s*[x×-]\s*(\d+))?\s$/;
 
 export const ZennTable = Table.extend({
 	addOptions() {

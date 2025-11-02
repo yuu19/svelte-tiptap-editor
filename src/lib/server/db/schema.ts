@@ -7,6 +7,8 @@ export const entries = sqliteTable('entries', {
 	title: text('title').notNull().default('Untitled'),
 	markdown: text('markdown').notNull(),
 	html: text('html').notNull(),
+	contentJson: text('content_json').notNull().default('{}'),
+	jsonVersion: integer('json_version').notNull().default(1),
 	createdAt: integer('created_at', { mode: 'timestamp' })
 		.notNull()
 		.$defaultFn(() => new Date()),

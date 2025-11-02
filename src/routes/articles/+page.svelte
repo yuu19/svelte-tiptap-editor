@@ -7,6 +7,8 @@ type Entry = {
 	title: string | null;
 	markdown: string | null;
 	html: string | null;
+	contentJson: string;
+	jsonVersion: number;
 	updatedAt: string | Date | null;
 };
 

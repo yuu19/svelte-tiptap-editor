@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import type { Readable } from 'svelte/store';
-	import type { Editor as CoreEditor } from '@tiptap/core';
+	import type { Editor as CoreEditor, JSONContent } from '@tiptap/core';
 	import type { Editor } from 'svelte-tiptap';
 	import StarterKit from '@tiptap/starter-kit';
 	import Link from '@tiptap/extension-link';
@@ -34,7 +34,7 @@
 		type MessageVariant,
 	} from '$lib/editor/extensions';
 
-	type ChangePayload = { html: string; markdown: string };
+	type ChangePayload = { html: string; markdown: string; json: JSONContent };
 
 	type HeadingItem = {
 		id: string;
@@ -45,21 +45,23 @@
 
 	interface Props {
 		initialContent?: string;
+		initialJson?: JSONContent | null;
 		placeholder?: string;
-		renderMarkdown?: (doc: unknown) => string;
+		renderMarkdown?: (doc: unknown, html: string) => string;
 		onImageUpload?: (files: File[]) => Promise<string[]>;
 		onChange?: (payload: ChangePayload) => void;
 		onMessage?: (payload: unknown) => void;
-		onReady?: () => void;
+		onReady?: (payload: { editor: CoreEditor }) => void;
 		slashCommandItems?: SlashCommandItem[];
 		slashCommandMaxItems?: number;
 	}
 
-	const defaultRenderMarkdown = () => '';
+	const defaultRenderMarkdown = (_doc: unknown, _html: string) => '';
 	const defaultUpload = async () => [] as string[];
 
 	let {
 		initialContent = '',
+		initialJson = null,
 		placeholder = '本文を入力...',
 		renderMarkdown = defaultRenderMarkdown,
 		onImageUpload = defaultUpload,
@@ -196,6 +198,13 @@
 		updateActiveHeading(instance, headings);
 	}
 
+	function emitChange(instance: CoreEditor) {
+		const html = instance.getHTML();
+		const json = instance.getJSON() as JSONContent;
+		const markdown = renderMarkdown(instance.state.doc, html);
+		onChange?.({ html, markdown, json });
+	}
+
 	function attachEditorEvents(instance: CoreEditor) {
 		editorEventUnsubscribers.forEach((unsubscribe) => unsubscribe());
 		editorEventUnsubscribers = [];
@@ -234,7 +243,6 @@
 			attachEditorEvents(instance);
 			if (!initialized) {
 				initialized = true;
-				onReady?.();
 			}
 		}
 
@@ -298,14 +306,14 @@
 
 		const store = createEditor({
 			extensions: [...extensions],
-			content: initialContent,
+			content: initialJson ?? initialContent,
 			onCreate: ({ editor }) => {
+				emitChange(editor);
 				updateHeadings(editor);
+				onReady?.({ editor });
 			},
 			onUpdate: ({ editor }) => {
-				const html = editor.getHTML();
-				const markdown = renderMarkdown(editor.state.doc);
-				onChange?.({ html, markdown });
+				emitChange(editor);
 				updateHeadings(editor);
 			},
 			onTransaction: ({ transaction }) => {
